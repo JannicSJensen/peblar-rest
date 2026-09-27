@@ -21,7 +21,7 @@ def test_manifest_is_hacs_compatible_and_collision_free() -> None:
     manifest = load_json(COMPONENT / "manifest.json")
     assert manifest["domain"] == "peblar_rest"
     assert manifest["domain"] not in {"peblar", "peblar_modbus"}
-    assert manifest["version"] == "0.1.1"
+    assert manifest["version"] == "0.1.2"
     assert manifest["requirements"] == ["mashumaro>=3.10", "tenacity>=8.0.0"]
     assert not any(req.startswith("peblar") for req in manifest["requirements"])
     assert manifest["iot_class"] == "local_polling"

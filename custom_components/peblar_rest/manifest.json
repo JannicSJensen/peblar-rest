@@ -8,7 +8,7 @@
   "integration_type": "device",
   "iot_class": "local_polling",
   "requirements": ["mashumaro>=3.10", "tenacity>=8.0.0"],
-  "version": "0.1.1",
+  "version": "0.1.2",
   "zeroconf": [
     {
       "name": "pblr-*",

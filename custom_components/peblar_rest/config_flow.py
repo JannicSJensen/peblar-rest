@@ -60,6 +60,7 @@ class PeblarRestConfigFlow(ConfigFlow, domain=DOMAIN):
 
     VERSION = 1
     _discovery_info: zeroconf.ZeroconfServiceInfo
+    _discovered_host: str
 
     @staticmethod
     def async_get_options_flow(config_entry: Any) -> OptionsFlow:
@@ -67,17 +68,26 @@ class PeblarRestConfigFlow(ConfigFlow, domain=DOMAIN):
         return PeblarRestOptionsFlow()
 
     async def _async_validate(
-        self, user_input: dict[str, Any], errors: dict[str, str]
+        self,
+        user_input: dict[str, Any],
+        errors: dict[str, str],
+        *,
+        host_field: bool = True,
     ) -> str | None:
+        host = user_input[CONF_HOST]
         try:
             return await _validate_input(self.hass, user_input)
         except PeblarAuthenticationError:
             errors[CONF_PASSWORD] = "invalid_auth"
-        except PeblarConnectionError:
-            errors[CONF_HOST] = "cannot_connect"
-        except PeblarUnsupportedFirmwareVersionError:
+        except PeblarConnectionError as err:
+            LOGGER.warning("Cannot connect to Peblar charger at %s: %s", host, err)
+            # Errors on a field missing from the form are silently dropped.
+            errors[CONF_HOST if host_field else "base"] = "cannot_connect"
+        except PeblarUnsupportedFirmwareVersionError as err:
+            LOGGER.warning("Unsupported Peblar firmware at %s: %s", host, err)
             errors["base"] = "unsupported_firmware"
-        except PeblarError:
+        except PeblarError as err:
+            LOGGER.warning("Peblar REST API unavailable at %s: %s", host, err)
             errors["base"] = "api_unavailable"
         except Exception:
             LOGGER.exception("Unexpected error validating a Peblar charger")
@@ -112,9 +122,11 @@ class PeblarRestConfigFlow(ConfigFlow, domain=DOMAIN):
         serial = discovery_info.properties.get("sn")
         if not serial:
             return self.async_abort(reason="no_serial_number")
+        host = _preferred_host(discovery_info)
         await self.async_set_unique_id(serial)
-        self._abort_if_unique_id_configured(updates={CONF_HOST: discovery_info.host})
+        self._abort_if_unique_id_configured(updates={CONF_HOST: host})
         self._discovery_info = discovery_info
+        self._discovered_host = host
         self.context["title_placeholders"] = {"name": discovery_info.name}
         return await self.async_step_zeroconf_confirm()
 
@@ -125,10 +137,10 @@ class PeblarRestConfigFlow(ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
         if user_input is not None:
             data = {
-                CONF_HOST: self._discovery_info.host,
+                CONF_HOST: self._discovered_host,
                 CONF_PASSWORD: user_input[CONF_PASSWORD],
             }
-            if await self._async_validate(data, errors):
+            if await self._async_validate(data, errors, host_field=False):
                 return self.async_create_entry(
                     title=f"Peblar {self.unique_id}", data=data
                 )
@@ -141,7 +153,7 @@ class PeblarRestConfigFlow(ConfigFlow, domain=DOMAIN):
                     )
                 }
             ),
-            description_placeholders={"host": self._discovery_info.host},
+            description_placeholders={"host": self._discovered_host},
             errors=errors,
         )
 
@@ -162,7 +174,7 @@ class PeblarRestConfigFlow(ConfigFlow, domain=DOMAIN):
                 CONF_HOST: entry.data[CONF_HOST],
                 CONF_PASSWORD: user_input[CONF_PASSWORD],
             }
-            if await self._async_validate(data, errors):
+            if await self._async_validate(data, errors, host_field=False):
                 return self.async_update_reload_and_abort(entry, data=data)
         return self.async_show_form(
             step_id="reauth_confirm",
@@ -225,6 +237,18 @@ class PeblarRestOptionsFlow(OptionsFlow):
                 }
             ),
         )
+
+
+def _preferred_host(discovery_info: zeroconf.ZeroconfServiceInfo) -> str:
+    """Prefer a routable IPv4 address; the charger may advertise IPv6 too."""
+    for address in discovery_info.ip_addresses:
+        if (
+            address.version == 4
+            and not address.is_link_local
+            and not address.is_unspecified
+        ):
+            return str(address)
+    return discovery_info.host
 
 
 def _connection_schema(data: Mapping[str, Any] | None) -> vol.Schema:
