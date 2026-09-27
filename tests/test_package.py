@@ -21,8 +21,9 @@ def test_manifest_is_hacs_compatible_and_collision_free() -> None:
     manifest = load_json(COMPONENT / "manifest.json")
     assert manifest["domain"] == "peblar_rest"
     assert manifest["domain"] not in {"peblar", "peblar_modbus"}
-    assert manifest["version"] == "0.1.0"
-    assert manifest["requirements"] == ["peblar==2.1.0"]
+    assert manifest["version"] == "0.1.1"
+    assert manifest["requirements"] == ["mashumaro>=3.10", "tenacity>=8.0.0"]
+    assert not any(req.startswith("peblar") for req in manifest["requirements"])
     assert manifest["iot_class"] == "local_polling"
     assert manifest["config_flow"] is True
     assert load_json(ROOT / "hacs.json")["render_readme"] is True
@@ -97,3 +98,15 @@ def test_charge_limit_uses_restore_number() -> None:
     source = (COMPONENT / "number.py").read_text(encoding="utf-8")
     assert "RestoreNumber" in source
     assert "async_get_last_number_data" in source
+
+
+def test_integration_does_not_import_shared_peblar_package() -> None:
+    """Use the vendored client so Home Assistant's bundled peblar is untouched."""
+    for path in COMPONENT.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.level == 0:
+                assert (node.module or "").split(".")[0] != "peblar", path
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    assert alias.name.split(".")[0] != "peblar", path

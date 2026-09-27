@@ -7,8 +7,8 @@
   "issue_tracker": "https://github.com/JannicSJensen/peblar-rest/issues",
   "integration_type": "device",
   "iot_class": "local_polling",
-  "requirements": ["peblar==2.1.0"],
-  "version": "0.1.0",
+  "requirements": ["mashumaro>=3.10", "tenacity>=8.0.0"],
+  "version": "0.1.1",
   "zeroconf": [
     {
       "name": "pblr-*",

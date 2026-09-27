@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from peblar import PeblarSetUserConfiguration, SmartChargingMode
-
+from custom_components.peblar_rest._peblar import (
+    PeblarSetUserConfiguration,
+    SmartChargingMode,
+)
 from custom_components.peblar_rest.const import (
     DEFAULT_SCAN_INTERVAL,
     MAX_SCAN_INTERVAL,

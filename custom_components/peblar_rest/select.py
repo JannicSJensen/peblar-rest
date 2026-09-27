@@ -10,14 +10,14 @@ from homeassistant.components.select import SelectEntity, SelectEntityDescriptio
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from peblar import (
+
+from ._peblar import (
     LedBrightness,
     Peblar,
     PeblarUserConfiguration,
     SmartChargingMode,
     SoundVolume,
 )
-
 from .coordinator import PeblarConfigEntry
 from .entity import PeblarRestEntity
 from .helpers import handle_peblar_errors

@@ -19,7 +19,8 @@ from homeassistant.helpers.selector import (
     TextSelectorConfig,
     TextSelectorType,
 )
-from peblar import (
+
+from ._peblar import (
     AccessMode,
     Peblar,
     PeblarAuthenticationError,
@@ -27,7 +28,6 @@ from peblar import (
     PeblarError,
     PeblarUnsupportedFirmwareVersionError,
 )
-
 from .const import (
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,

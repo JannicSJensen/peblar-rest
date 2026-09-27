@@ -28,7 +28,9 @@ All charger communication stays on your local network.
 The integration uses the maintained
 [`peblar==2.1.0`](https://github.com/frenck/python-peblar/releases/tag/v2.1.0)
 client for authentication, API-token refresh, protocol models, retries, rate-limit
-backoff, minimum-firmware checks, and firmware 1.10 endpoint compatibility.
+backoff, minimum-firmware checks, and firmware 1.10 endpoint compatibility. The
+client is vendored in `custom_components/peblar_rest/_peblar` so it never replaces
+the older `peblar` package that Home Assistant bundles for its built-in integration.
 
 ## Requirements
 

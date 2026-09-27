@@ -4,7 +4,7 @@ import logging
 from datetime import timedelta
 from typing import Final
 
-from peblar import ChargeLimiter, CPState
+from ._peblar import ChargeLimiter, CPState
 
 DOMAIN: Final = "peblar_rest"
 DEFAULT_SCAN_INTERVAL: Final = 10
