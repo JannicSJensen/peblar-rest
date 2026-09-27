@@ -1,0 +1,253 @@
+{
+  "config": {
+    "abort": {
+      "already_configured": "This Peblar charger is already configured.",
+      "different_device": "The entered connection details belong to a different Peblar charger.",
+      "no_serial_number": "The discovered Peblar charger did not provide a serial number."
+    },
+    "error": {
+      "api_unavailable": "The charger cannot enable its local REST API in read/write mode.",
+      "cannot_connect": "Failed to connect.",
+      "invalid_auth": "Invalid authentication.",
+      "unsupported_firmware": "The charger firmware does not support the local REST API. Update it to firmware 1.6 or newer.",
+      "unknown": "Unexpected error."
+    },
+    "step": {
+      "reauth_confirm": {
+        "data": {
+          "password": "Password"
+        },
+        "data_description": {
+          "password": "The password for the charger's local web interface."
+        },
+        "description": "Enter the current password for your Peblar charger's local web interface."
+      },
+      "reconfigure": {
+        "data": {
+          "host": "Host",
+          "password": "Password"
+        },
+        "data_description": {
+          "host": "The charger hostname or local IP address.",
+          "password": "The password for the charger's local web interface."
+        },
+        "description": "Update the local connection details for this Peblar charger."
+      },
+      "user": {
+        "data": {
+          "host": "Host",
+          "password": "Password"
+        },
+        "data_description": {
+          "host": "The charger hostname or local IP address.",
+          "password": "The password for the charger's local web interface."
+        },
+        "description": "Connect to a Peblar charger on your local network. The integration enables its local REST API in read/write mode."
+      },
+      "zeroconf_confirm": {
+        "data": {
+          "password": "Password"
+        },
+        "data_description": {
+          "password": "The password for the charger's local web interface."
+        },
+        "description": "Set up the Peblar charger discovered at {host}."
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "data": {
+          "scan_interval": "Polling interval"
+        },
+        "data_description": {
+          "scan_interval": "Seconds between local REST API updates. Peblar limits all clients together to 5 requests per second."
+        }
+      }
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "active_errors": {
+        "name": "Active errors"
+      },
+      "active_warnings": {
+        "name": "Active warnings"
+      },
+      "socket_lock": {
+        "name": "Socket lock"
+      }
+    },
+    "button": {
+      "socket_unlock": {
+        "name": "Unlock socket"
+      }
+    },
+    "number": {
+      "charge_current_limit": {
+        "name": "Charge current limit"
+      },
+      "custom_solar_power_target": {
+        "name": "Custom Solar grid target"
+      },
+      "custom_solar_power_threshold": {
+        "name": "Custom Solar power threshold"
+      }
+    },
+    "select": {
+      "buzzer_volume": {
+        "name": "Buzzer volume",
+        "state": {
+          "high": "High",
+          "low": "Low",
+          "low_medium": "Low medium",
+          "medium": "Medium",
+          "off": "Off"
+        }
+      },
+      "led_brightness": {
+        "name": "LED brightness",
+        "state": {
+          "automatic": "Automatic",
+          "bright": "Bright",
+          "dim": "Dim",
+          "medium": "Medium",
+          "off": "Off"
+        }
+      },
+      "smart_charging": {
+        "name": "Smart charging",
+        "state": {
+          "custom_solar": "Custom Solar",
+          "default": "Default",
+          "fast_solar": "Fast solar",
+          "pure_solar": "Pure solar",
+          "scheduled": "Scheduled",
+          "smart_solar": "Smart solar"
+        }
+      }
+    },
+    "sensor": {
+      "charge_current_limit_actual": {
+        "name": "Actual charge current limit"
+      },
+      "charge_current_limit_source": {
+        "name": "Charge limit source",
+        "state": {
+          "charging_cable": "Charging cable",
+          "current_limiter": "Current limiter",
+          "dynamic_load_balancing": "Dynamic load balancing",
+          "external_power_limit": "External power limit",
+          "group_load_balancing": "Group load balancing",
+          "hardware_limitation": "Hardware limitation",
+          "high_temperature": "High temperature",
+          "household_power_limit": "Household power limit",
+          "installation_limit": "Installation limit",
+          "internal_power_limit": "Internal power limit",
+          "local_modbus_api": "Local Modbus API",
+          "local_rest_api": "Local REST API",
+          "local_scheduled_charging": "Local scheduled charging",
+          "ocpp_smart_charging": "OCPP smart charging",
+          "overcurrent_protection": "Overcurrent protection",
+          "phase_imbalance": "Phase imbalance",
+          "power_factor": "Power factor",
+          "reserved": "Reserved",
+          "solar_charging": "Solar charging"
+        }
+      },
+      "cp_state": {
+        "name": "State",
+        "state": {
+          "charging": "Charging",
+          "error": "Error",
+          "fault": "Fault",
+          "invalid": "Invalid",
+          "no_ev_connected": "No EV connected",
+          "suspended": "Suspended"
+        }
+      },
+      "current_phase_1": {
+        "name": "Current phase 1"
+      },
+      "current_phase_2": {
+        "name": "Current phase 2"
+      },
+      "current_phase_3": {
+        "name": "Current phase 3"
+      },
+      "energy_session": {
+        "name": "Session energy"
+      },
+      "energy_total": {
+        "name": "Lifetime energy"
+      },
+      "power_phase_1": {
+        "name": "Power phase 1"
+      },
+      "power_phase_2": {
+        "name": "Power phase 2"
+      },
+      "power_phase_3": {
+        "name": "Power phase 3"
+      },
+      "power_total": {
+        "name": "Total power"
+      },
+      "uptime": {
+        "name": "Last restart"
+      },
+      "voltage_phase_1": {
+        "name": "Voltage phase 1"
+      },
+      "voltage_phase_2": {
+        "name": "Voltage phase 2"
+      },
+      "voltage_phase_3": {
+        "name": "Voltage phase 3"
+      },
+      "wlan_signal_strength": {
+        "name": "WLAN signal strength"
+      }
+    },
+    "switch": {
+      "charge": {
+        "name": "Charge"
+      },
+      "custom_solar_always_charge": {
+        "name": "Custom Solar always charge"
+      },
+      "force_single_phase": {
+        "name": "Force single phase"
+      },
+      "socket_lock": {
+        "name": "Keep socket locked"
+      }
+    },
+    "update": {
+      "customization": {
+        "name": "Customization"
+      }
+    }
+  },
+  "exceptions": {
+    "authentication_error": {
+      "message": "Authentication failed while communicating with the Peblar charger."
+    },
+    "communication_error": {
+      "message": "Communication with the Peblar charger failed: {error}"
+    },
+    "customization_update_first": {
+      "message": "Install the customization update before the firmware update."
+    },
+    "update_in_progress": {
+      "message": "Another package update is already in progress for this charger."
+    },
+    "unknown_error": {
+      "message": "The Peblar charger returned an unexpected error: {error}"
+    },
+    "unsupported_firmware": {
+      "message": "This charger does not support the local REST API: {error}"
+    }
+  }
+}

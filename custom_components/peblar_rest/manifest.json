@@ -1,0 +1,18 @@
+{
+  "domain": "peblar_rest",
+  "name": "Peblar REST",
+  "codeowners": ["@JannicSJensen"],
+  "config_flow": true,
+  "documentation": "https://github.com/JannicSJensen/peblar-rest",
+  "issue_tracker": "https://github.com/JannicSJensen/peblar-rest/issues",
+  "integration_type": "device",
+  "iot_class": "local_polling",
+  "requirements": ["peblar==2.1.0"],
+  "version": "0.1.0",
+  "zeroconf": [
+    {
+      "name": "pblr-*",
+      "type": "_http._tcp.local."
+    }
+  ]
+}
