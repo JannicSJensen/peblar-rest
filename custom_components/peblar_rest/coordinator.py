@@ -11,7 +11,8 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
-from peblar import (
+
+from ._peblar import (
     Peblar,
     PeblarApi,
     PeblarAuthenticationError,
@@ -24,7 +25,6 @@ from peblar import (
     PeblarUserConfiguration,
     PeblarVersions,
 )
-
 from .const import CONFIG_SCAN_INTERVAL, DOMAIN, LOGGER, VERSION_SCAN_INTERVAL
 
 

@@ -1,0 +1,866 @@
+"""Asynchronous Python client for Peblar EV chargers."""
+
+from __future__ import annotations
+
+import asyncio
+import socket
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, NotRequired, Self, TypedDict
+
+import orjson
+from aiohttp import ClientResponseError, CookieJar, hdrs
+from aiohttp.client import ClientError, ClientSession
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
+from yarl import URL
+
+from .const import (
+    MINIMUM_FIRMWARE_VERSION_CONNECTOR_API,
+    MINIMUM_FIRMWARE_VERSION_LOCAL_REST_API,
+    AuthorizationMethod,
+)
+from .exceptions import (
+    PeblarAuthenticationError,
+    PeblarBadRequestError,
+    PeblarConnectionError,
+    PeblarConnectionTimeoutError,
+    PeblarError,
+    PeblarRateLimitError,
+    PeblarUnsupportedFirmwareVersionError,
+)
+from .models import (
+    BaseModel,
+    PeblarAddVehicleToken,
+    PeblarApiToken,
+    PeblarAuthStatus,
+    PeblarBuzzerVolume,
+    PeblarChargeSessionAuthorization,
+    PeblarConnector,
+    PeblarEnergyHistory,
+    PeblarEVInterface,
+    PeblarEVInterfaceChange,
+    PeblarEVInterfaceReplace,
+    PeblarHealth,
+    PeblarLedIntensity,
+    PeblarLocalRestApiAccess,
+    PeblarLogin,
+    PeblarMeter,
+    PeblarMeterHistory,
+    PeblarModbusApiAccess,
+    PeblarNtpSync,
+    PeblarReboot,
+    PeblarRfidToken,
+    PeblarScheduledCharging,
+    PeblarSessionGraph,
+    PeblarSetUserConfiguration,
+    PeblarSmartCharging,
+    PeblarSocketLock,
+    PeblarSystem,
+    PeblarSystemInformation,
+    PeblarUpdate,
+    PeblarUserConfiguration,
+    PeblarVehicleToken,
+    PeblarVersions,
+    PeblarWebInterfaceMode,
+    resolve_led_brightness,
+)
+from .utils import build_error_message, get_awesome_version
+from .websocket import PeblarWebsocket
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Coroutine
+    from datetime import datetime
+
+    from .const import (
+        AccessMode,
+        LedBrightness,
+        PackageType,
+        SmartChargingMode,
+        SoundVolume,
+    )
+
+
+LOGIN_URI = URL("auth/login")
+
+
+class _RfidTokenPayload(TypedDict):
+    """Single RFID token payload returned by the standalone list endpoint."""
+
+    RfidTokenUid: str
+    RfidTokenDescription: str
+
+
+class _RfidTokenListEnvelope(TypedDict):
+    """RFID token list response envelope."""
+
+    Tokens: list[_RfidTokenPayload]
+
+
+class _VehicleTokenPayload(TypedDict):
+    """Single vehicle payload returned by the autocharge list endpoint."""
+
+    EvccId: str
+    Alias: str
+
+
+class _VehicleTokenListEnvelope(TypedDict):
+    """Autocharge vehicle list response envelope.
+
+    A charger with ISO 15118 turned off answers with a bare null instead
+    of this object, and when it does send the object the key itself can
+    be absent or null, so nothing here is guaranteed.
+    """
+
+    VehicleTokens: NotRequired[list[_VehicleTokenPayload] | None]
+
+
+@dataclass(kw_only=True)
+class Peblar:
+    """Main class for handling connections with Peblar EV chargers."""
+
+    host: str
+    request_timeout: float = 8
+    session: ClientSession | None = None
+
+    _close_session: bool = False
+    _password: str | None = field(default=None, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        """Initialize the Peblar object."""
+        self.url = URL.build(scheme="http", host=self.host, path="/api/v1/")
+
+    @retry(
+        retry=retry_if_exception_type((PeblarConnectionError, PeblarRateLimitError)),
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(),
+        reraise=True,
+    )
+    async def request(
+        self,
+        uri: URL,
+        *,
+        method: str = hdrs.METH_GET,
+        data: BaseModel | None = None,
+        _relogged_in: bool = False,
+    ) -> str:
+        """Handle a request to a Peblar charger."""
+        if self.session is None:
+            self.session = ClientSession(
+                cookie_jar=CookieJar(unsafe=True),
+                json_serialize=orjson.dumps,  # ty: ignore[invalid-argument-type]
+            )
+            self._close_session = True
+
+        # The body is read before the status is checked, so a failing
+        # request can still tell us what the charger complained about.
+        # Decoding never raises: an undecodable body must still come out
+        # as a PeblarError, not a UnicodeDecodeError.
+        content = ""
+        try:
+            async with asyncio.timeout(self.request_timeout):
+                response = await self.session.request(
+                    method=method,
+                    url=self.url.join(uri),
+                    headers={"Content-Type": "application/json"},
+                    data=data.to_json() if data else None,
+                )
+                content = await response.text(errors="replace")
+                response.raise_for_status()
+        except TimeoutError as exception:
+            msg = "Timeout occurred while connecting to the Peblar charger"
+            raise PeblarConnectionTimeoutError(msg) from exception
+        except ClientResponseError as exception:
+            if exception.status == 401:
+                # A session the charger forgot looks exactly like a wrong
+                # password. If we know the password, and this is not the
+                # login call itself, log back in and try once more. The
+                # charger drops sessions on reboot and after a network
+                # blip, which would otherwise force the user to
+                # re-authenticate by hand.
+                if not _relogged_in and self._password is not None and uri != LOGIN_URI:
+                    await self.login(password=self._password)
+                    return await self.request(
+                        uri, method=method, data=data, _relogged_in=True
+                    )
+                msg = "Authentication error. Provided password is invalid."
+                raise PeblarAuthenticationError(
+                    build_error_message(msg, content)
+                ) from exception
+            if exception.status == 429:
+                msg = "Rate limit exceeded while communicating to the Peblar charger"
+                raise PeblarRateLimitError(
+                    build_error_message(msg, content)
+                ) from exception
+            if exception.status == 400:
+                msg = "Bad request sent to the Peblar charger"
+                raise PeblarBadRequestError(
+                    build_error_message(msg, content)
+                ) from exception
+            msg = "Error occurred while communicating to the Peblar charger"
+            raise PeblarError(build_error_message(msg, content)) from exception
+        except (
+            ClientError,
+            socket.gaierror,
+        ) as exception:
+            msg = "Error occurred while communicating to the Peblar charger"
+            raise PeblarConnectionError(msg) from exception
+
+        return content
+
+    async def login(self, *, password: str) -> None:
+        """Log in to the Peblar charger.
+
+        The password is stored internally (only after a successful login)
+        so that PeblarApi instances created via rest_api() can
+        transparently re-authenticate when the API token becomes invalid
+        (e.g. after a charger reboot).
+        """
+        await self.request(
+            LOGIN_URI,
+            method=hdrs.METH_POST,
+            data=PeblarLogin(
+                password=password,
+            ),
+        )
+        self._password = password
+
+    async def rest_api(
+        self,
+        *,
+        enable: bool | None = None,
+        access_mode: AccessMode | None = None,
+    ) -> PeblarApi:
+        """Get and control access to the REST API."""
+        # Older firmware simply has no local REST API to hand out, and its
+        # user configuration does not carry the fields checked below.
+        versions = await self.current_versions()
+        minimum = get_awesome_version(MINIMUM_FIRMWARE_VERSION_LOCAL_REST_API)
+        if versions.firmware_version and versions.firmware_version < minimum:
+            msg = (
+                f"The local REST API requires firmware {minimum} or later, "
+                f"this charger runs {versions.firmware_version}."
+            )
+            raise PeblarUnsupportedFirmwareVersionError(msg)
+
+        user = await self.user_configuration()
+        if not user.local_rest_api_allowed:
+            msg = "The use of the local REST API is not allowed for this device."
+            raise PeblarError(msg)
+
+        if enable is not None and user.local_rest_api_enabled == enable:
+            enable = None
+
+        if access_mode is not None and user.local_rest_api_access_mode == access_mode:
+            access_mode = None
+
+        if enable is not None or access_mode:
+            await self.request(
+                URL("config/user"),
+                method=hdrs.METH_PATCH,
+                data=PeblarLocalRestApiAccess(enabled=enable, access_mode=access_mode),
+            )
+            if enable is not None:
+                user.local_rest_api_enabled = enable
+
+        if not user.local_rest_api_enabled:
+            msg = "The local REST API is not enabled for this device."
+            raise PeblarError(msg)
+
+        return PeblarApi(
+            host=self.host,
+            token=await self.api_token(),
+            token_refresh=self._refresh_api_token,
+        )
+
+    async def modbus_api(
+        self,
+        *,
+        enable: bool | None = None,
+        access_mode: AccessMode | None = None,
+    ) -> None:
+        """Control access to the Modbus API."""
+        user = await self.user_configuration()
+        if not user.modbus_server_allowed:
+            msg = "The use of the Modbus API is not allowed for this device."
+            raise PeblarError(msg)
+
+        if user.modbus_server_enabled == enable:
+            enable = None
+
+        if user.modbus_server_access_mode == access_mode:
+            access_mode = None
+
+        if enable is not None or access_mode:
+            await self.request(
+                URL("config/user"),
+                method=hdrs.METH_PATCH,
+                data=PeblarModbusApiAccess(enabled=enable, access_mode=access_mode),
+            )
+
+    async def api_token(self, *, generate_new_api_token: bool = False) -> str:
+        """Get the API token."""
+        url = URL("config/api-token")
+
+        if generate_new_api_token:
+            await self.request(url, method=hdrs.METH_POST)
+
+        result = await self.request(url)
+        return PeblarApiToken.from_json(result).api_token
+
+    async def available_versions(self, *, use_cache: bool = True) -> PeblarVersions:
+        """Get available versions.
+
+        The charger caches what it last heard from Peblar's update
+        servers. Pass use_cache=False to make it go and ask again, which
+        is what you want while waiting for an update to land.
+        """
+        result = await self.request(
+            URL("system/software/automatic-update/available-versions").with_query(
+                {"UseCache": "true" if use_cache else "false"}
+            )
+        )
+        return PeblarVersions.from_json(result)
+
+    async def current_versions(self) -> PeblarVersions:
+        """Get current versions."""
+        result = await self.request(
+            URL("system/software/automatic-update/current-versions")
+        )
+        return PeblarVersions.from_json(result)
+
+    async def smart_charging(self, smart_charging_mode: SmartChargingMode) -> None:
+        """Enable or disable smart charging."""
+        await self.request(
+            URL("config/user"),
+            method=hdrs.METH_PATCH,
+            data=PeblarSmartCharging(smart_charging=smart_charging_mode),
+        )
+
+    async def socket_lock(self, *, locked: bool) -> None:
+        """Lock or unlock the socket of the Peblar charger."""
+        await self.request(
+            URL("config/user"),
+            method=hdrs.METH_PATCH,
+            data=PeblarSocketLock(user_keep_socket_locked=locked),
+        )
+
+    async def set_buzzer_volume(self, *, volume: SoundVolume) -> None:
+        """Set the buzzer volume of the Peblar charger."""
+        await self.request(
+            URL("config/user"),
+            method=hdrs.METH_PATCH,
+            data=PeblarBuzzerVolume(buzzer_volume=volume),
+        )
+
+    async def set_led_brightness(self, *, brightness: LedBrightness) -> None:
+        """Set the LED brightness of the Peblar charger."""
+        led_intensity_mode, led_intensity_manual = resolve_led_brightness(brightness)
+        await self.request(
+            URL("config/user"),
+            method=hdrs.METH_PATCH,
+            data=PeblarLedIntensity(
+                led_intensity_mode=led_intensity_mode,
+                led_intensity_manual=led_intensity_manual,
+            ),
+        )
+
+    async def identify(self) -> None:
+        """Identify the Peblar charger."""
+        await self.request(URL("system/identify"), method=hdrs.METH_PUT)
+
+    async def rfid_tokens(self) -> list[PeblarRfidToken]:
+        """Get the list of RFID tokens in the standalone auth list."""
+        result = await self.request(URL("config/auth/standalonelist"))
+        data: _RfidTokenListEnvelope = orjson.loads(result)
+        return [PeblarRfidToken.from_dict(item) for item in data["Tokens"]]
+
+    async def meter_history(
+        self,
+        *,
+        start: datetime | None = None,
+        stop: datetime | None = None,
+    ) -> PeblarMeterHistory:
+        """Get meter history, optionally limited to a time range.
+
+        The charger reads these bounds as ISO 8601 and quietly ignores
+        anything it cannot parse: hand it a Unix timestamp and it returns
+        the whole history instead of an error. Taking datetimes is what
+        keeps that from happening.
+
+        A naive datetime is read as the charger's own local time. An aware
+        one carries its offset, which the charger does honour.
+        """
+        url = URL("statistics/meterhistory")
+        query: dict[str, str] = {}
+        if start:
+            query["StartTime"] = start.isoformat()
+        if stop:
+            query["StopTime"] = stop.isoformat()
+        if query:
+            url = url.with_query(query)
+
+        result = await self.request(url)
+        raw: dict[str, object] = orjson.loads(result)
+        if raw.get("NoSessions") is True:
+            return PeblarMeterHistory(
+                corrupted=False,
+                corrupted_session=[],
+                session=[],
+            )
+        return PeblarMeterHistory.from_json(result)
+
+    async def rfid_token(self, *, uid: str) -> PeblarRfidToken:
+        """Get a single RFID token from the standalone auth list."""
+        result = await self.request(URL("config/auth/standalonelist") / uid)
+        return PeblarRfidToken.from_json(result)
+
+    async def vehicle_tokens(self) -> list[PeblarVehicleToken]:
+        """Get the list of vehicles in the autocharge auth list.
+
+        Autocharge rides on ISO 15118, so a charger with that turned off
+        hands back nothing at all here rather than an empty list.
+        """
+        result = await self.request(URL("config/auth/vehicle-standalonelist"))
+        data: _VehicleTokenListEnvelope | None = orjson.loads(result)
+        if not data:
+            return []
+
+        return [
+            PeblarVehicleToken.from_dict(item)
+            for item in data.get("VehicleTokens") or []
+        ]
+
+    async def add_vehicle_token(
+        self,
+        *,
+        evcc_id: str,
+        alias: str,
+        authorize: bool = True,
+    ) -> None:
+        """Add a vehicle to the autocharge auth list."""
+        await self.request(
+            URL("config/auth/vehicle-standalonelist"),
+            method=hdrs.METH_POST,
+            data=PeblarAddVehicleToken(
+                evcc_id=evcc_id,
+                alias=alias,
+                authorize=authorize,
+            ),
+        )
+
+    async def delete_vehicle_token(self, *, evcc_id: str) -> None:
+        """Remove a vehicle from the autocharge auth list."""
+        await self.request(
+            URL("config/auth/vehicle-standalonelist") / evcc_id,
+            method=hdrs.METH_DELETE,
+        )
+
+    async def add_rfid_token(
+        self,
+        *,
+        rfid_token_uid: str,
+        rfid_token_description: str,
+    ) -> None:
+        """Add an RFID token to the standalone auth list."""
+        await self.request(
+            URL("config/auth/standalonelist"),
+            method=hdrs.METH_POST,
+            data=PeblarRfidToken(
+                rfid_token_uid=rfid_token_uid,
+                rfid_token_description=rfid_token_description,
+            ),
+        )
+
+    async def delete_rfid_token(self, *, uid: str) -> None:
+        """Remove an RFID token from the standalone auth list."""
+        await self.request(
+            URL("config/auth/standalonelist") / uid,
+            method=hdrs.METH_DELETE,
+        )
+
+    async def socket_unlock(self) -> None:
+        """Unlock the socket of the Peblar charger."""
+        # Firmware 1.10 moved the endpoint under connector/, the old path
+        # answers 404 there.
+        versions = await self.current_versions()
+        minimum = get_awesome_version(MINIMUM_FIRMWARE_VERSION_CONNECTOR_API)
+        if versions.firmware_version and versions.firmware_version < minimum:
+            uri = URL("system/socket-unlock")
+        else:
+            uri = URL("connector/socket-unlock")
+        await self.request(uri, method=hdrs.METH_POST)
+
+    async def reboot(self) -> None:
+        """Reboot the Peblar charger."""
+        await self.request(
+            URL("system/reboot"),
+            method=hdrs.METH_POST,
+            data=PeblarReboot(),
+        )
+
+    async def update(self, *, package_type: PackageType) -> None:
+        """Update the Peblar charger to the latest version.
+
+        One package at a time, in PACKAGE_UPDATE_ORDER: the charger wants
+        Customization before Firmware. It reboots on its own afterwards,
+        so this returns long before the update is done. Subscribe to
+        PeblarWebsocket.subscribe_firmware_update_status() first to
+        follow along.
+        """
+        await self.request(
+            URL("system/software/automatic-update/update"),
+            method=hdrs.METH_POST,
+            data=PeblarUpdate(package_type=package_type),
+        )
+
+    async def system_information(self) -> PeblarSystemInformation:
+        """Get information about the Peblar charger."""
+        result = await self.request(URL("system/info"))
+        return PeblarSystemInformation.from_json(result)
+
+    def websocket(self) -> PeblarWebsocket:
+        """Get a websocket client for this charger's live event stream.
+
+        Shares the logged-in session, so call login() first.
+        """
+        if self.session is None:
+            msg = "Log in to the Peblar charger before opening a websocket."
+            raise PeblarError(msg)
+
+        return PeblarWebsocket(host=self.host, session=self.session)
+
+    async def logout(self) -> None:
+        """Log out of the Peblar charger, ending the current session.
+
+        Also forgets the stored password, so a later request will not
+        quietly log back in again.
+        """
+        await self.request(URL("auth/logout"), method=hdrs.METH_POST)
+        self._password = None
+
+    async def auth_status(self) -> PeblarAuthStatus:
+        """Get the state of the current web interface session."""
+        result = await self.request(URL("auth/status"))
+        return PeblarAuthStatus.from_json(result)
+
+    async def connector(self) -> PeblarConnector:
+        """Get what is currently plugged into the charger."""
+        # Firmware 1.10 moved this under connector/ and renamed it, the
+        # old path answers 404 there.
+        versions = await self.current_versions()
+        minimum = get_awesome_version(MINIMUM_FIRMWARE_VERSION_CONNECTOR_API)
+        if versions.firmware_version and versions.firmware_version < minimum:
+            uri = URL("system/connector")
+        else:
+            uri = URL("connector/plug-state")
+
+        result = await self.request(uri)
+        return PeblarConnector.from_json(result)
+
+    async def time_synced(self) -> bool:
+        """Return whether the charger's clock is synchronized."""
+        result = await self.request(URL("system/ntp-sync"))
+        return PeblarNtpSync.from_json(result).time_synced
+
+    async def web_interface_mode(self) -> str:
+        """Return the mode the charger's web interface is running in."""
+        result = await self.request(URL("system/web-interface-mode"))
+        return PeblarWebInterfaceMode.from_json(result).mode
+
+    async def session_graph(self) -> PeblarSessionGraph:
+        """Get the power graph of the current or last charging session."""
+        result = await self.request(URL("statistics/session"))
+        return PeblarSessionGraph.from_json(result)
+
+    async def energy_history(self) -> PeblarEnergyHistory:
+        """Get the long term energy history of the charger."""
+        result = await self.request(URL("statistics/history"))
+        return PeblarEnergyHistory.from_json(result)
+
+    async def scheduled_charging(self) -> PeblarScheduledCharging:
+        """Get the local charging schedule."""
+        result = await self.request(URL("config/scheduledcharging/schedules"))
+        return PeblarScheduledCharging.from_json(result)
+
+    async def set_scheduled_charging(
+        self,
+        schedule: PeblarScheduledCharging,
+    ) -> None:
+        """Replace the local charging schedule.
+
+        Every weekday has to be present, so read the current schedule,
+        change what you want and hand the whole thing back.
+        """
+        await self.request(
+            URL("config/scheduledcharging/schedules"),
+            method=hdrs.METH_POST,
+            data=schedule,
+        )
+
+    async def user_configuration(self) -> PeblarUserConfiguration:
+        """Get information about the user configuration."""
+        result = await self.request(URL("config/user"))
+        return PeblarUserConfiguration.from_json(result)
+
+    async def update_user_configuration(
+        self,
+        user_configuration: PeblarSetUserConfiguration,
+    ) -> None:
+        """Update (part of) the user configuration."""
+        await self.request(
+            URL("config/user"),
+            method=hdrs.METH_PATCH,
+            data=user_configuration,
+        )
+
+    async def _refresh_api_token(self) -> str:
+        """Re-login and return a fresh API token.
+
+        Called by PeblarApi when it receives a 401, allowing it to
+        transparently recover from token invalidation (e.g. after a
+        charger reboot or firmware update).
+        """
+        if self._password is None:
+            msg = "Cannot refresh API token: no password stored (call login() first)"
+            raise PeblarAuthenticationError(msg)
+        await self.login(password=self._password)
+        return await self.api_token()
+
+    async def close(self) -> None:
+        """Close open client session."""
+        if self.session and self._close_session:
+            await self.session.close()
+
+    async def __aenter__(self) -> Self:
+        """Async enter.
+
+        Returns
+        -------
+            The Peblar object.
+
+        """
+        return self
+
+    async def __aexit__(self, *_exc_info: object) -> None:
+        """Async exit.
+
+        Args:
+        ----
+            _exc_info: Exec type.
+
+        """
+        await self.close()
+
+
+@dataclass(kw_only=True)
+class PeblarApi:
+    """Main class for handling connections with the Local Peblar REST API."""
+
+    host: str
+    token: str
+    request_timeout: float = 8
+    session: ClientSession | None = None
+    token_refresh: Callable[[], Coroutine[Any, Any, str]] | None = field(
+        default=None, repr=False
+    )
+
+    _close_session: bool = False
+
+    def __post_init__(self) -> None:
+        """Initialize the Peblar object."""
+        self.url = URL.build(scheme="http", host=self.host, path="/api/wlac/v1/")
+
+    @retry(
+        retry=retry_if_exception_type((PeblarConnectionError, PeblarRateLimitError)),
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(),
+        reraise=True,
+    )
+    async def request(
+        self,
+        uri: URL,
+        *,
+        method: str = hdrs.METH_GET,
+        data: BaseModel | None = None,
+        _refreshed: bool = False,
+    ) -> str:
+        """Handle a request to a Peblar charger Local REST API."""
+        if self.session is None:
+            self.session = ClientSession(
+                json_serialize=orjson.dumps,  # ty: ignore[invalid-argument-type]
+            )
+            self._close_session = True
+
+        # The body is read before the status is checked, so a failing
+        # request can still tell us what the charger complained about.
+        # Decoding never raises: an undecodable body must still come out
+        # as a PeblarError, not a UnicodeDecodeError.
+        content = ""
+        try:
+            async with asyncio.timeout(self.request_timeout):
+                response = await self.session.request(
+                    method=method,
+                    url=self.url.join(uri),
+                    headers={
+                        "Content-Type": "application/json",
+                        "Authorization": self.token,
+                    },
+                    data=data.to_json() if data else None,
+                )
+                content = await response.text(errors="replace")
+                response.raise_for_status()
+        except TimeoutError as exception:
+            msg = "Timeout occurred while connecting to the Peblar charger API"
+            raise PeblarConnectionTimeoutError(msg) from exception
+        except ClientResponseError as exception:
+            if exception.status == 401:
+                # If a token_refresh callback is available and we haven't
+                # already retried, re-login and retry the request once.
+                # This handles token invalidation after charger reboots
+                # or firmware updates.
+                if not _refreshed and self.token_refresh is not None:
+                    self.token = await self.token_refresh()
+                    return await self.request(
+                        uri, method=method, data=data, _refreshed=True
+                    )
+                msg = "Authentication error. API token is invalid or expired."
+                raise PeblarAuthenticationError(
+                    build_error_message(msg, content)
+                ) from exception
+            if exception.status == 429:
+                msg = (
+                    "Rate limit exceeded while communicating to the Peblar charger API"
+                )
+                raise PeblarRateLimitError(
+                    build_error_message(msg, content)
+                ) from exception
+            if exception.status == 400:
+                msg = "Bad request sent to the Peblar charger API"
+                raise PeblarBadRequestError(
+                    build_error_message(msg, content)
+                ) from exception
+            msg = "Error occurred while communicating to the Peblar charger API"
+            raise PeblarError(build_error_message(msg, content)) from exception
+        except (
+            ClientError,
+            socket.gaierror,
+        ) as exception:
+            msg = "Error occurred while communicating to the Peblar charger API"
+            raise PeblarConnectionError(msg) from exception
+
+        return content
+
+    async def ev_interface(
+        self,
+        *,
+        charge_current_limit: int | None = None,
+        force_single_phase: bool | None = None,
+    ) -> PeblarEVInterface:
+        """Get information about the EV interface."""
+        url = URL("evinterface")
+        if charge_current_limit is not None or force_single_phase is not None:
+            await self.request(
+                url,
+                method=hdrs.METH_PATCH,
+                data=PeblarEVInterfaceChange(
+                    charge_current_limit=charge_current_limit,
+                    force_single_phase=force_single_phase,
+                ),
+            )
+
+        result = await self.request(url)
+        return PeblarEVInterface.from_json(result)
+
+    async def set_ev_interface(
+        self,
+        *,
+        charge_current_limit: int,
+        force_single_phase: bool,
+    ) -> PeblarEVInterface:
+        """Replace the complete EV interface configuration.
+
+        Where ev_interface() patches individual fields, this writes them
+        all in one go. The charger answers with the resulting state, so no
+        follow-up read is needed.
+        """
+        result = await self.request(
+            URL("evinterface"),
+            method=hdrs.METH_PUT,
+            data=PeblarEVInterfaceReplace(
+                charge_current_limit=charge_current_limit,
+                force_single_phase=force_single_phase,
+            ),
+        )
+        return PeblarEVInterface.from_json(result)
+
+    async def authorize_charge_session(
+        self,
+        *,
+        token: str | None = None,
+        name: str | None = None,
+        method: AuthorizationMethod = AuthorizationMethod.RFID,
+    ) -> None:
+        """Authorize or deauthorize the running charge session.
+
+        Presents a token from the standalone auth list to the charger, as
+        if it were held against the reader. Identify it by its UID
+        (`token`) or by its description (`name`), not both. The charger
+        toggles: it authorizes an unauthorized session and stops an
+        authorized one.
+
+        The charger accepts the request before acting on it, so watch the
+        EV interface state to see the result land.
+        """
+        await self.request(
+            URL("authorization/charge-session"),
+            method=hdrs.METH_POST,
+            data=PeblarChargeSessionAuthorization(
+                method=method,
+                token=token,
+                name=name,
+            ),
+        )
+
+    async def health(self) -> PeblarHealth:
+        """Get health information from the Peblar API."""
+        result = await self.request(URL("health"))
+        return PeblarHealth.from_json(result)
+
+    async def meter(self) -> PeblarMeter:
+        """Get meter information from the Peblar API."""
+        result = await self.request(URL("meter"))
+        return PeblarMeter.from_json(result)
+
+    async def system(self) -> PeblarSystem:
+        """Get system information from the Peblar API."""
+        result = await self.request(URL("system"))
+        return PeblarSystem.from_json(result)
+
+    async def close(self) -> None:
+        """Close open client session."""
+        if self.session and self._close_session:
+            await self.session.close()
+
+    async def __aenter__(self) -> Self:
+        """Async enter.
+
+        Returns
+        -------
+            The PeblarApi object.
+
+        """
+        return self
+
+    async def __aexit__(self, *_exc_info: object) -> None:
+        """Async exit.
+
+        Args:
+        ----
+            _exc_info: Exec type.
+
+        """
+        await self.close()

@@ -13,7 +13,8 @@ from homeassistant.exceptions import (
     ConfigEntryNotReady,
 )
 from homeassistant.helpers.aiohttp_client import async_create_clientsession
-from peblar import (
+
+from ._peblar import (
     AccessMode,
     Peblar,
     PeblarAuthenticationError,
@@ -21,7 +22,6 @@ from peblar import (
     PeblarError,
     PeblarUnsupportedFirmwareVersionError,
 )
-
 from .const import DEFAULT_SCAN_INTERVAL, DOMAIN
 from .coordinator import (
     PeblarConfigEntry,

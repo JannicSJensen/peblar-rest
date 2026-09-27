@@ -10,8 +10,8 @@ from homeassistant.components.switch import SwitchEntity, SwitchEntityDescriptio
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from peblar import PeblarSetUserConfiguration, PeblarUserConfiguration
 
+from ._peblar import PeblarSetUserConfiguration, PeblarUserConfiguration
 from .coordinator import (
     PeblarConfigEntry,
     PeblarConfigurationCoordinator,

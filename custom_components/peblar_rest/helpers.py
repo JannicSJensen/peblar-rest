@@ -7,8 +7,8 @@ from functools import wraps
 from typing import Any
 
 from homeassistant.exceptions import HomeAssistantError
-from peblar import PeblarAuthenticationError, PeblarConnectionError, PeblarError
 
+from ._peblar import PeblarAuthenticationError, PeblarConnectionError, PeblarError
 from .const import DOMAIN
 
 

@@ -14,8 +14,8 @@ from homeassistant.components.button import (
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from peblar import Peblar
 
+from ._peblar import Peblar
 from .coordinator import PeblarConfigEntry
 from .entity import PeblarRestEntity
 from .helpers import handle_peblar_errors

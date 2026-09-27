@@ -20,8 +20,8 @@ from homeassistant.const import (
 )
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from peblar import PeblarSetUserConfiguration, PeblarUserConfiguration
 
+from ._peblar import PeblarSetUserConfiguration, PeblarUserConfiguration
 from .coordinator import (
     PeblarConfigEntry,
     PeblarConfigurationCoordinator,

@@ -16,8 +16,8 @@ from homeassistant.components.update import (
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from peblar import PackageType, PeblarConnectionError, PeblarError
 
+from ._peblar import PackageType, PeblarConnectionError, PeblarError
 from .const import DOMAIN, LOGGER
 from .coordinator import PeblarConfigEntry, PeblarVersionData
 from .entity import PeblarRestEntity
